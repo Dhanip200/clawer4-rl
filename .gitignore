@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Colab upload bundle (rebuilt from the repo files)
+colab/clawer4_colab.zip
+
+# Test-run leftovers
+practice.params
+practice.mp4
