@@ -101,6 +101,7 @@ python -m venv .venv
 | `tools/` | CAD converter, standing test, sine trot, environment test |
 | `rl/` | RL environment and PPO training |
 | `colab/` | Colab notebooks (setup check, training) |
+| `firmware/` | ESP32 code for the real robot (Waveshare General Driver for Robots): `hw_check` reads all servos + the QMI8658 IMU without moving anything |
 | `media/` | Walking video and GIF |
 
 ## Known limitations
