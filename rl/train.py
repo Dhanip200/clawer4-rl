@@ -6,7 +6,9 @@ In a Colab cell:
     make_policy, params = train_policy()                   # ~50M steps, shows a live score graph
     make_video(make_policy, params, command=(0.2, 0, 0))   # watch it walk forward at 0.2 m/s
 
-The brain is saved to clawer4_policy.params after training.
+The brain is saved to clawer4_policy.params after training. During training a backup copy
+(clawer4_policy_backup.params) is saved at every score check and downloaded to the PC every
+DOWNLOAD_EVERY checks, so a Colab disconnect only loses the last few minutes.
 """
 import functools
 import time
@@ -53,6 +55,7 @@ PPO_SETTINGS = dict(
 )
 POLICY_LAYERS = (128, 128, 128, 128)       # the brain that goes on the robot
 VALUE_LAYERS = (256, 256, 256, 256, 256)   # the critic, only used during training
+DOWNLOAD_EVERY = 4                         # send the backup brain to the PC every 4 score checks (~10 min)
 
 
 def train_policy(out="clawer4_policy.params", seed=0, **overrides):
@@ -67,6 +70,16 @@ def train_policy(out="clawer4_policy.params", seed=0, **overrides):
               f"{(time.time() - t0) / 60:5.1f} min", flush=True)
         _plot(steps, scores, settings["num_timesteps"])
 
+    backup = out.replace(".params", "_backup.params")
+    n_saved = [0]
+
+    def save_backup(num_steps, make_policy, params):
+        brax_model.save_params(backup, params)
+        n_saved[0] += 1
+        if n_saved[0] % DOWNLOAD_EVERY == 0:
+            print(f"backup brain at {num_steps / 1e6:.1f}M steps -> downloading {backup}", flush=True)
+            _download(backup)
+
     make_policy, params, _ = ppo.train(
         environment=env,
         network_factory=functools.partial(
@@ -74,6 +87,7 @@ def train_policy(out="clawer4_policy.params", seed=0, **overrides):
             policy_hidden_layer_sizes=POLICY_LAYERS,
             value_hidden_layer_sizes=VALUE_LAYERS),
         progress_fn=progress,
+        policy_params_fn=save_backup,
         seed=seed,
         **settings,
     )
