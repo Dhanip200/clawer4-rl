@@ -70,18 +70,22 @@ def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides
     if terrain and "log_training_metrics" in inspect.signature(ppo.train).parameters:
         settings.setdefault("log_training_metrics", True)
     steps, scores, t0 = [], [], time.time()
+    level = [None]
 
     def progress(num_steps, metrics):
-        steps.append(num_steps)
         if "eval/episode_reward" not in metrics:      # a training-metrics report, not a score check
             lv = [v for k, v in metrics.items() if k.endswith("curriculum/level")]
             if lv:
-                print(f"{num_steps / 1e6:6.1f}M steps | average level {float(lv[0]):.2f} / 5", flush=True)
+                level[0] = float(lv[0])
+                print(f"{num_steps / 1e6:6.1f}M steps | average level {level[0]:.2f} / 5", flush=True)
             return
+        steps.append(num_steps)
         scores.append(float(metrics["eval/episode_reward"]))
         print(f"{num_steps / 1e6:6.1f}M steps | score {scores[-1]:7.2f} | "
               f"{(time.time() - t0) / 60:5.1f} min", flush=True)
         _plot(steps, scores, settings["num_timesteps"])
+        if level[0] is not None:                       # the graph clears the screen, so repeat it
+            print(f"latest average level {level[0]:.2f} / 5", flush=True)
 
     backup = out.replace(".params", "_backup.params")
     n_saved = [0]
