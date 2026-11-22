@@ -6,11 +6,16 @@ In a Colab cell:
     make_policy, params = train_policy()                   # ~50M steps, shows a live score graph
     make_video(make_policy, params, command=(0.2, 0, 0))   # watch it walk forward at 0.2 m/s
 
+Rough ground (policy P1):
+    make_policy, params = train_policy(terrain=True, out="clawer4_p1.params")
+    make_video(make_policy, params, terrain=True, level=3, kind=2, out="p1_stairs.mp4")
+
 The brain is saved to clawer4_policy.params after training. During training a backup copy
 (clawer4_policy_backup.params) is saved at every score check and downloaded to the PC every
 DOWNLOAD_EVERY checks, so a Colab disconnect only loses the last few minutes.
 """
 import functools
+import inspect
 import time
 
 import jax
@@ -58,13 +63,21 @@ VALUE_LAYERS = (256, 256, 256, 256, 256)   # the critic, only used during traini
 DOWNLOAD_EVERY = 4                         # send the backup brain to the PC every 4 score checks (~10 min)
 
 
-def train_policy(out="clawer4_policy.params", seed=0, **overrides):
-    env = Clawer4Walk()
+def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides):
+    env = Clawer4Walk(terrain=terrain)
     settings = {**PPO_SETTINGS, **overrides}
+    # on rough ground, also report the training robots' average curriculum level (if this Brax can)
+    if terrain and "log_training_metrics" in inspect.signature(ppo.train).parameters:
+        settings.setdefault("log_training_metrics", True)
     steps, scores, t0 = [], [], time.time()
 
     def progress(num_steps, metrics):
         steps.append(num_steps)
+        if "eval/episode_reward" not in metrics:      # a training-metrics report, not a score check
+            lv = [v for k, v in metrics.items() if k.endswith("curriculum/level")]
+            if lv:
+                print(f"{num_steps / 1e6:6.1f}M steps | average level {float(lv[0]):.2f} / 5", flush=True)
+            return
         scores.append(float(metrics["eval/episode_reward"]))
         print(f"{num_steps / 1e6:6.1f}M steps | score {scores[-1]:7.2f} | "
               f"{(time.time() - t0) / 60:5.1f} min", flush=True)
@@ -124,14 +137,23 @@ def _plot(steps, scores, total):
         print(f"{s / 1e6:6.1f}M steps | score {r:7.2f}")
 
 
-def make_video(make_policy, params, command=(0.2, 0.0, 0.0), seconds=10, out="walk.mp4"):
-    """Run the trained brain with a fixed command, save a video and print how it did."""
+def make_video(make_policy, params, command=(0.2, 0.0, 0.0), seconds=10, out="walk.mp4",
+               terrain=False, level=0, kind=0):
+    """Run the trained brain with a fixed command, save a video and print how it did.
+    terrain=True: start on tile [level, kind] (kinds: 0 bumps, 1 slope, 2 stairs up, 3 stairs down, 4 blocks)."""
     import mediapy
 
-    env = Clawer4Walk()
+    env = Clawer4Walk(terrain=terrain)
     policy = jax.jit(make_policy(params, deterministic=True))
     step = jax.jit(env.step)
     state = jax.jit(env.reset)(jax.random.PRNGKey(0))
+    if terrain:  # put it on the chosen tile, facing +x
+        q = env._start_qpos(jax.random.PRNGKey(0), jp.int32(level), jp.int32(kind))
+        q = q.at[0:2].set(env.starts[level, kind, :2]).at[3:7].set(jp.array([1.0, 0, 0, 0]))
+        data = mjx.forward(env.mjx_model, state.pipeline_state.replace(qpos=q, ctrl=q[7:]))
+        state = state.replace(pipeline_state=data, info={**state.info, "level": jp.int32(level),
+                                                         "kind": jp.int32(kind), "origin": q[:2]})
+    x0, y0 = float(state.pipeline_state.qpos[0]), float(state.pipeline_state.qpos[1])
     state = state.replace(info={**state.info, "command": jp.array(command, dtype=jp.float32)})
 
     renderer = mujoco.Renderer(env.mj_model, 360, 480)
@@ -150,7 +172,8 @@ def make_video(make_policy, params, command=(0.2, 0.0, 0.0), seconds=10, out="wa
         if state.done:
             print(f"fell over after {i * 0.02:.1f} s")
             break
-    x, y = float(state.pipeline_state.qpos[0]), float(state.pipeline_state.qpos[1])
+    x = float(state.pipeline_state.qpos[0]) - x0
+    y = float(state.pipeline_state.qpos[1]) - y0
     t = (i + 1) * 0.02
     print(f"command {command} -> moved x {x:+.2f} m, y {y:+.2f} m in {t:.1f} s "
           f"({x / t:+.3f} m/s forward)")

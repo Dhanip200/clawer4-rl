@@ -13,6 +13,11 @@ Command = [forward m/s, sideways m/s, turn rad/s], picked at random each episode
 Body linear speed is NOT in what the robot sees, because the real robot can't
 measure it. Down-direction and spin come from an IMU, so the real robot needs one.
 
+Rough ground (terrain=True): the floor is the heightfield from rl/terrain.py (5 kinds x 6
+levels of tiles). Each robot starts on the flat patch of one tile. Curriculum: when an episode ends,
+a robot that walked at least 80% of the distance it was told to moves one level harder; one that
+fell or walked less than 40% of it moves one level easier. Robots that beat level 5 go to a random level.
+
 Works with Brax PPO when brax is installed (Colab); falls back to a tiny
 stand-in State so the env can still be tested on a PC without brax.
 """
@@ -22,6 +27,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jp
 import mujoco
+import numpy as np
 from mujoco import mjx
 
 try:
@@ -43,13 +49,20 @@ except ImportError:  # no brax on this PC: same fields, enough to test the env
     class Env:
         pass
 
-XML = Path(__file__).resolve().parents[1] / "model" / "clawer4.xml"
+MODEL_DIR = Path(__file__).resolve().parents[1] / "model"
+XML = MODEL_DIR / "clawer4.xml"
+TERRAIN_XML = MODEL_DIR / "clawer4_terrain.xml"
+TERRAIN_STARTS = MODEL_DIR / "terrain_starts.npy"
 FEET = ["FR_foot_site", "FL_foot_site", "RR_foot_site", "RL_foot_site"]
 
 CTRL_DT = 0.02           # policy runs at 50 Hz
 ACTION_SCALE = 0.3       # rad: action of 1.0 moves a joint 0.3 rad from stance
 MAX_JOINT_SPEED = 4.71   # rad/s, fastest the ST3020 can be commanded
-FOOT_DOWN_Z = 0.012      # m: foot site lower than this = touching the ground
+FOOT_DOWN_Z = 0.012      # m: foot site closer than this to the ground under it = touching it
+MIN_BODY_Z = 0.05        # m: body lower than this above the ground under it = fell
+EPISODE_STEPS = 1000     # must match episode_length in train.py (used by the curriculum)
+START_JITTER = 0.1       # m: random shift of the start point inside the flat patch (terrain only)
+LEVEL_UP, LEVEL_DOWN = 0.8, 0.4   # curriculum: fraction of the commanded distance walked
 SOLVER_ITERS = 2         # physics solver iterations (XML says 100: far too slow on the GPU)
 SOLVER_LS_ITERS = 6
 
@@ -74,7 +87,9 @@ REWARD_WEIGHTS = {
 
 
 class Clawer4Walk(Env):
-    def __init__(self, xml_path=XML):
+    def __init__(self, terrain=False, xml_path=None):
+        self.terrain = terrain
+        xml_path = xml_path or (TERRAIN_XML if terrain else XML)
         self.mj_model = mujoco.MjModel.from_xml_path(str(xml_path))
         # Speed-ups for GPU training (same idea as MuJoCo Playground's Go1):
         # a few solver iterations are enough at 0.002 s steps...
@@ -93,6 +108,20 @@ class Clawer4Walk(Env):
         self.torso_id = self.mj_model.body("torso").id
         self.feet_ids = jp.array([self.mj_model.site(f).id for f in FEET])
 
+        # Ground height map, so "how high above the ground" works on bumps and steps too
+        m = self.mj_model
+        if m.nhfield:
+            nr, nc = m.hfield_nrow[0], m.hfield_ncol[0]
+            rx, ry, top, _ = m.hfield_size[0]
+            self.ground_h = jp.array(m.hfield_data[:nr * nc].reshape(nr, nc) * top)
+            self.ground_half = jp.array([rx, ry])
+        else:
+            self.ground_h = None
+        self.n_kinds = 1
+        if terrain:
+            self.starts = jp.array(np.load(TERRAIN_STARTS))     # [level, kind] -> x, y, ground z
+            self.n_levels, self.n_kinds = self.starts.shape[:2]
+
     # Brax wants these three
     @property
     def observation_size(self):
@@ -107,9 +136,10 @@ class Clawer4Walk(Env):
         return "mjx"
 
     def reset(self, rng):
-        rng, k_q, k_cmd, k_zero = jax.random.split(rng, 4)
-        # start from the stance pose with the joints nudged a little, so it learns to recover
-        qpos = self.default_qpos.at[7:].add(jax.random.uniform(k_q, (12,), minval=-0.05, maxval=0.05))
+        rng, k_q, k_cmd, k_zero, k_tile = jax.random.split(rng, 5)
+        level = jp.zeros((), dtype=jp.int32)                 # everyone starts on the easiest level
+        kind = jax.random.randint(k_tile, (), 0, self.n_kinds)
+        qpos = self._start_qpos(k_q, level, kind)
         data = mjx.make_data(self.mjx_model).replace(qpos=qpos, ctrl=qpos[7:])
         data = mjx.forward(self.mjx_model, data)
 
@@ -120,8 +150,15 @@ class Clawer4Walk(Env):
             "last_act": jp.zeros(12),
             "feet_air_time": jp.zeros(4),
             "last_contact": jp.ones(4, dtype=bool),
+            # curriculum bookkeeping
+            "level": level,
+            "kind": kind,
+            "origin": qpos[0:2],                             # where this episode started
+            "asked_dist": jp.zeros(()),                      # how far the commands asked it to go
+            "ep_step": jp.zeros((), dtype=jp.int32),
         }
         metrics = {f"reward/{k}": jp.zeros(()) for k in REWARD_WEIGHTS}
+        metrics["curriculum/level"] = level.astype(jp.float32)
         obs = self._observe(data, info)
         return State(data, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
@@ -134,12 +171,14 @@ class Clawer4Walk(Env):
             return mjx.step(self.mjx_model, d.replace(ctrl=ctrl))
         data = jax.lax.fori_loop(0, self.n_substeps, physics, state.pipeline_state)
 
-        # did it fall?
+        # did it fall? (heights are measured from the ground under the body / foot)
         up_z = data.xmat[self.torso_id][2, 2]                # 1 = level, 0 = on its side
-        fell = (up_z < 0.5) | (data.qpos[2] < 0.05)
+        body_z = data.qpos[2] - self._ground(data.qpos[0:2])
+        fell = (up_z < 0.5) | (body_z < MIN_BODY_Z)
 
         # foot contacts and how long each foot was in the air
-        contact = data.site_xpos[self.feet_ids][:, 2] < FOOT_DOWN_Z
+        feet = data.site_xpos[self.feet_ids]
+        contact = feet[:, 2] - self._ground(feet[:, :2]) < FOOT_DOWN_Z
         contact_filt = contact | state.info["last_contact"]  # ignore one-step flicker
         first_contact = (state.info["feet_air_time"] > 0) & contact_filt
         air_time = state.info["feet_air_time"] + CTRL_DT
@@ -147,25 +186,80 @@ class Clawer4Walk(Env):
         terms = self._reward_terms(data, action, state.info, air_time, first_contact, fell)
         reward = sum(REWARD_WEIGHTS[k] * v for k, v in terms.items()) * CTRL_DT
 
-        # The trainer restarts fallen robots without calling reset(), so pick a fresh command
-        # here every 10 s and after a fall, and forget the last action after a fall.
-        rng, k_cmd, k_zero = jax.random.split(state.info["rng"], 3)
-        new_cmd = (state.info["step"] >= RESAMPLE_STEPS) | fell
-        info = dict(state.info)
+        # The trainer restarts robots without calling reset(): when an episode ends it puts back
+        # info["first_pipeline_state"] / info["first_obs"]. So everything that should change between
+        # episodes is done here: new command, curriculum level, and a new start point.
+        old = state.info
+        rng, k_cmd, k_zero, k_q, k_tile, k_rand = jax.random.split(old["rng"], 6)
+        ep_step = old["ep_step"] + 1
+        ended = fell | (ep_step >= EPISODE_STEPS)            # fell, or ran out of time
+        asked = old["asked_dist"] + jp.linalg.norm(old["command"][:2]) * CTRL_DT
+        walked = jp.linalg.norm(data.qpos[0:2] - old["origin"])
+
+        level, kind = old["level"], old["kind"]
+        if self.terrain:
+            up = ~fell & (asked > 0.5) & (walked > LEVEL_UP * asked)
+            down = fell | (walked < LEVEL_DOWN * asked)
+            new_level = jp.clip(level + up.astype(jp.int32) - down.astype(jp.int32), 0, self.n_levels - 1)
+            beat_top = up & (level == self.n_levels - 1)     # beat the hardest level: random level
+            new_level = jp.where(beat_top, jax.random.randint(k_rand, (), 0, self.n_levels), new_level)
+            level = jp.where(ended, new_level, level)
+            kind = jp.where(ended, jax.random.randint(k_tile, (), 0, self.n_kinds), kind)
+        next_qpos = self._start_qpos(k_q, level, kind)        # used only if this episode ended
+
+        new_cmd = (old["step"] >= RESAMPLE_STEPS) | ended
+        info = dict(old)
         info["rng"] = rng
-        info["step"] = jp.where(new_cmd, 0, state.info["step"] + 1)
-        info["command"] = jp.where(new_cmd, self._sample_command(k_cmd, k_zero), state.info["command"])
-        info["last_act"] = jp.where(fell, 0.0, action)
-        info["feet_air_time"] = air_time * ~contact_filt * ~fell
-        info["last_contact"] = contact
+        info["step"] = jp.where(new_cmd, 0, old["step"] + 1)
+        info["command"] = jp.where(new_cmd, self._sample_command(k_cmd, k_zero), old["command"])
+        info["last_act"] = jp.where(ended, 0.0, action)
+        info["feet_air_time"] = air_time * ~contact_filt * ~ended
+        info["last_contact"] = jp.where(ended, True, contact)
+        info["level"], info["kind"] = level, kind
+        info["origin"] = jp.where(ended, next_qpos[0:2], old["origin"])
+        info["asked_dist"] = jp.where(ended, 0.0, asked)
+        info["ep_step"] = jp.where(ended, 0, ep_step)
+        # the start state the trainer puts back when this episode ends
+        template = old.get("first_pipeline_state", data)
+        start = template.replace(qpos=next_qpos, qvel=jp.zeros_like(data.qvel), ctrl=next_qpos[7:])
+        info["first_pipeline_state"] = start
+        info["first_obs"] = self._observe(start, info)
         # keep any metrics the Brax wrappers added (e.g. "reward"), just update ours
         metrics = dict(state.metrics)
         metrics.update({f"reward/{k}": v for k, v in terms.items()})
+        metrics["curriculum/level"] = level.astype(jp.float32)
         obs = self._observe(data, info)
         return state.replace(pipeline_state=data, obs=obs, reward=reward,
                              done=fell.astype(jp.float32), metrics=metrics, info=info)
 
     # ---------- helpers ----------
+
+    def _ground(self, xy):
+        """Ground height (m) under points xy [..., 2], read from the heightfield (0 on flat ground)."""
+        if self.ground_h is None:
+            return jp.zeros(xy.shape[:-1])
+        nr, nc = self.ground_h.shape
+        # MuJoCo spreads the samples evenly from -half to +half (first/last sample on the edges)
+        u = jp.clip((xy[..., 0] + self.ground_half[0]) / (2 * self.ground_half[0]) * (nc - 1), 0, nc - 1.001)
+        v = jp.clip((xy[..., 1] + self.ground_half[1]) / (2 * self.ground_half[1]) * (nr - 1), 0, nr - 1.001)
+        j, i = jp.floor(u).astype(jp.int32), jp.floor(v).astype(jp.int32)
+        fu, fv = u - j, v - i
+        H = self.ground_h
+        return (H[i, j] * (1 - fu) * (1 - fv) + H[i, j + 1] * fu * (1 - fv)
+                + H[i + 1, j] * (1 - fu) * fv + H[i + 1, j + 1] * fu * fv)
+
+    def _start_qpos(self, key, level, kind):
+        """Stance pose with the joints nudged a little (so it learns to recover).
+        On rough ground: placed on the flat patch of tile [level, kind], facing a random way."""
+        k_q, k_xy, k_yaw = jax.random.split(key, 3)
+        qpos = self.default_qpos.at[7:].add(jax.random.uniform(k_q, (12,), minval=-0.05, maxval=0.05))
+        if self.terrain:
+            x, y, z = self.starts[level, kind]
+            xy = jp.array([x, y]) + jax.random.uniform(k_xy, (2,), minval=-START_JITTER, maxval=START_JITTER)
+            yaw = jax.random.uniform(k_yaw, (), minval=-jp.pi, maxval=jp.pi)
+            qpos = qpos.at[0:3].set(jp.array([xy[0], xy[1], z + self.default_qpos[2] + 0.005]))
+            qpos = qpos.at[3:7].set(jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)]))
+        return qpos
 
     def _sample_command(self, k_cmd, k_zero):
         cmd = jax.random.uniform(k_cmd, (3,), minval=CMD_LO, maxval=CMD_HI)
