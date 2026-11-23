@@ -76,7 +76,9 @@ def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides
     env = Clawer4Walk(terrain=terrain)
     settings = {**PPO_SETTINGS, **overrides}
     _run[0] = os.path.basename(out).replace(".params", "")
-    if _drive_ok():
+    if _on_kaggle():
+        print(f"on Kaggle: files are saved in {os.getcwd()} (Kaggle keeps them as the run's Output)", flush=True)
+    elif _drive_ok():
         print(f"saving files to Google Drive: {os.path.join(DRIVE_ROOT, _run[0])}", flush=True)
     else:
         print("Google Drive not mounted: files will be sent as browser downloads instead", flush=True)
@@ -133,12 +135,19 @@ def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides
     return make_policy, params
 
 
+def _on_kaggle():
+    return os.path.isdir("/kaggle/working")
+
+
 def _drive_ok():
     return os.path.isdir("/content/drive/MyDrive")
 
 
 def _keep(path):
-    """Copy a file to Google Drive if it is mounted, otherwise send it as a browser download."""
+    """Copy a file to Google Drive if it is mounted, otherwise send it as a browser download.
+    On Kaggle the file is already in the kept Output folder, so nothing to do."""
+    if _on_kaggle():
+        return
     if _drive_ok():
         try:
             folder = os.path.join(DRIVE_ROOT, _run[0])
@@ -219,5 +228,8 @@ def make_video(make_policy, params, command=(0.2, 0.0, 0.0), seconds=10, out="wa
     print(f"command {command} -> moved x {x:+.2f} m, y {y:+.2f} m in {t:.1f} s "
           f"({x / t:+.3f} m/s forward)")
     mediapy.write_video(out, frames, fps=25)
-    mediapy.show_video(frames, fps=25)
+    try:
+        mediapy.show_video(frames, fps=25)     # only works inside a notebook
+    except Exception:
+        pass
     _keep(out)
