@@ -11,11 +11,18 @@ Rough ground (policy P1):
     make_video(make_policy, params, terrain=True, level=3, kind=2, out="p1_stairs.mp4")
 
 The brain is saved to clawer4_policy.params after training. During training a backup copy
-(clawer4_policy_backup.params) is saved at every score check and downloaded to the PC every
-DOWNLOAD_EVERY checks, so a Colab disconnect only loses the last few minutes.
+(clawer4_policy_backup.params) is saved at every score check, so a Colab disconnect only loses
+the last few minutes.
+
+Keeping the files: if Google Drive is mounted first (from google.colab import drive;
+drive.mount('/content/drive')), every backup, the final brain and the videos are copied to
+MyDrive/clawer4_runs/<run name>/ (run name = out without ".params"). No browser download is
+needed, so it works even if the tab disconnects. Without Drive it falls back to browser downloads.
 """
 import functools
 import inspect
+import os
+import shutil
 import time
 
 import jax
@@ -60,12 +67,19 @@ PPO_SETTINGS = dict(
 )
 POLICY_LAYERS = (128, 128, 128, 128)       # the brain that goes on the robot
 VALUE_LAYERS = (256, 256, 256, 256, 256)   # the critic, only used during training
-DOWNLOAD_EVERY = 4                         # send the backup brain to the PC every 4 score checks (~10 min)
+DOWNLOAD_EVERY = 4                         # without Drive: download the backup every 4 score checks (~10 min)
+DRIVE_ROOT = "/content/drive/MyDrive/clawer4_runs"
+_run = ["videos"]                          # Drive folder name, set by train_policy
 
 
 def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides):
     env = Clawer4Walk(terrain=terrain)
     settings = {**PPO_SETTINGS, **overrides}
+    _run[0] = os.path.basename(out).replace(".params", "")
+    if _drive_ok():
+        print(f"saving files to Google Drive: {os.path.join(DRIVE_ROOT, _run[0])}", flush=True)
+    else:
+        print("Google Drive not mounted: files will be sent as browser downloads instead", flush=True)
     # on rough ground, also report the training robots' average curriculum level (if this Brax can)
     if terrain and "log_training_metrics" in inspect.signature(ppo.train).parameters:
         settings.setdefault("log_training_metrics", True)
@@ -75,8 +89,11 @@ def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides
     def progress(num_steps, metrics):
         if "eval/episode_reward" not in metrics:      # a training-metrics report, not a score check
             lv = [v for k, v in metrics.items() if k.endswith("curriculum/level")]
+            ln = [v for k, v in metrics.items() if k.endswith("episode/length")]
             if lv:
-                level[0] = float(lv[0])
+                # Brax adds the level up over every step of the episode, so divide by its length
+                n = float(ln[0]) if ln and float(ln[0]) > 0 else settings["episode_length"]
+                level[0] = float(lv[0]) / n
                 print(f"{num_steps / 1e6:6.1f}M steps | average level {level[0]:.2f} / 5", flush=True)
             return
         steps.append(num_steps)
@@ -93,9 +110,11 @@ def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides
     def save_backup(num_steps, make_policy, params):
         brax_model.save_params(backup, params)
         n_saved[0] += 1
-        if n_saved[0] % DOWNLOAD_EVERY == 0:
+        if _drive_ok():
+            _keep(backup)                              # quick copy, every score check
+        elif n_saved[0] % DOWNLOAD_EVERY == 0:
             print(f"backup brain at {num_steps / 1e6:.1f}M steps -> downloading {backup}", flush=True)
-            _download(backup)
+            _keep(backup)
 
     make_policy, params, _ = ppo.train(
         environment=env,
@@ -110,8 +129,26 @@ def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides
     )
     brax_model.save_params(out, params)
     print(f"done in {(time.time() - t0) / 60:.1f} min, brain saved to {out}")
-    _download(out)  # Colab wipes its files when the session ends, so send it to the PC now
+    _keep(out)  # Colab wipes its files when the session ends, so keep a copy now
     return make_policy, params
+
+
+def _drive_ok():
+    return os.path.isdir("/content/drive/MyDrive")
+
+
+def _keep(path):
+    """Copy a file to Google Drive if it is mounted, otherwise send it as a browser download."""
+    if _drive_ok():
+        try:
+            folder = os.path.join(DRIVE_ROOT, _run[0])
+            os.makedirs(folder, exist_ok=True)
+            shutil.copy(path, os.path.join(folder, os.path.basename(path)))
+            print(f"saved {path} to Drive: {folder}", flush=True)
+            return
+        except Exception as e:
+            print(f"Drive copy failed ({e}), downloading instead", flush=True)
+    _download(path)
 
 
 def _download(path):
@@ -183,4 +220,4 @@ def make_video(make_policy, params, command=(0.2, 0.0, 0.0), seconds=10, out="wa
           f"({x / t:+.3f} m/s forward)")
     mediapy.write_video(out, frames, fps=25)
     mediapy.show_video(frames, fps=25)
-    _download(out)
+    _keep(out)

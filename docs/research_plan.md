@@ -93,8 +93,8 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 | 1 | Run `hw_check` on the real robot: servo IDs, load readings, IMU, read time | ⏸️ waiting for the robot |
 | 2 | Measure the real robot: weight, joint limits, servo directions, load-vs-weight line | ⬜ |
 | 3 | Retrain B1 (the flat policy was lost) and save it | ✅ 21 Nov: 50M steps, 54.7 min on a T4, final score 44.4, walks 0.196 m/s for a 0.2 command (1.96 m in 10 s, 0 m sideways). Brain: `clawer4_policy.params`, video: `media/walk_b1.mp4` |
-| 4 | Add terrain + curriculum to the sim | ✅ 22 Nov: env `Clawer4Walk(terrain=True)` starts robots on tile start patches (random kind, random facing), levels up/down at episode end, foot contact + fall check now measured from the ground under the robot. `tools/test_terrain_env.py` passes. Colab practice run still to do |
-| 5 | Add load (+ noise) to the sim, train P1, P2, P3 | ⬜ |
+| 4 | Add terrain + curriculum to the sim | ✅ 22 Nov: env `Clawer4Walk(terrain=True)` starts robots on tile start patches (random kind, random facing), levels up/down at episode end, foot contact + fall check now measured from the ground under the robot. `tools/test_terrain_env.py` passes. Colab practice run OK 22 Nov (score 4.4 → 11.3, robot stands; files in `final-quad-rl\p1-practice-221126`) |
+| 5 | Add load (+ noise) to the sim, train P1, P2, P3 | 🟡 P1 run 1 (22 Nov) lost: learned well (score 33.3 at 13.9M) but the Colab tab disconnected at 11:41 PM and never reconnected, nothing downloaded. Re-run 23 Nov with Drive saving |
 | 6 | Sim results table + graphs | ⬜ |
 | 7 | Run the policy on the ESP32 (legs in the air first) | ⬜ |
 | 8 | Real obstacle course, all policies | ⬜ |
@@ -102,15 +102,28 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 
 ## ▶️ Next session (start here)
 
-**Where we stopped (22 Nov):** rough ground + curriculum are in the env and pass the laptop tests
-(`python tools/test_terrain_env.py`: stands on all 5 kinds, ground height matches MuJoCo, levels go up/down, no NaNs).
+**Where we stopped (23 Nov, 1:50 AM):**
+- Rough ground + levels are in the env, pushed to GitHub (commits `5459ecf`, `d4169c7`).
+- Practice run on rough ground OK (score 4.4 → 11.3 in 0.5M steps; the robot only stands, normal for a practice run).
+- **P1 full run #1 was lost.** It was learning well: score 4.4 → 13.4 → 21.2 → 26.8 → 30.7 → 33.3 (0 → 13.9M steps, ~0.5M steps/min).
+  Then the Colab tab lost its connection at 11:41 PM (laptop probably slept) and never reconnected, so the brain was never downloaded.
 
-**Next step:**
-1. Push the new files to GitHub (Colab clones the repo).
-2. 7-minute Colab practice run on rough ground: `train_policy(terrain=True, num_timesteps=5_000_000, out="clawer4_p1_test.params")`.
-   Check: score goes up, no NaNs, "average level" lines appear and creep above 0.
+**What went wrong (lessons):**
+- `files.download` needs the browser tab connected; each download also opens a Chrome "Save as" window that freezes the tab until someone clicks Save.
+- The laptop must not sleep (set "sleep when plugged in" to Never before a run).
+- Never run the training cell twice in one Colab session (it crashes); restart the session first.
+- The "average level" print is wrong (shows 100-350 "/ 5"): Brax adds the level up over a whole episode. Needs dividing by the episode length.
 
-**Then:** train **P1** (rough ground, no load feeling), ~1 hour on Colab.
+**Next step (23 Nov):**
+1. Code fixes (Claude): save the backup + final brain + video to **Google Drive** (`MyDrive/clawer4_runs/<run name>/`) instead of
+   Chrome downloads; fix the average-level print. Push to GitHub.
+2. In Colab: Runtime → "Disconnect and delete runtime" (the old stuck session), then run the notebook from the top.
+   Allow Drive access once when asked.
+3. Full P1 run: `train_policy(terrain=True, out="clawer4_p1.params")`, ~1 h 50 min. Laptop plugged in, sleep = Never, tab open.
+4. Check at ~10M steps: score above 20 (run #1 had 30.7 at 11.1M) and average level above 0.
+5. After: copy the brain from Drive into `final-quad-rl\p1-<date>` and `clawer4-rl/`, watch the video on bumps, then stairs.
+
+**Then:** add servo **load** to the sim and train **P2**.
 
 **Plan until the robot arrives:**
 
