@@ -102,26 +102,32 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 
 ## ▶️ Next session (start here)
 
-**Where we stopped (23 Nov, 1:50 AM):**
-- Rough ground + levels are in the env, pushed to GitHub (commits `5459ecf`, `d4169c7`).
-- Practice run on rough ground OK (score 4.4 → 11.3 in 0.5M steps; the robot only stands, normal for a practice run).
-- **P1 full run #1 was lost.** It was learning well: score 4.4 → 13.4 → 21.2 → 26.8 → 30.7 → 33.3 (0 → 13.9M steps, ~0.5M steps/min).
-  Then the Colab tab lost its connection at 11:41 PM (laptop probably slept) and never reconnected, so the brain was never downloaded.
+**Where we are (24 Nov, ~00:00):**
+- **P1 run #2 is training on Kaggle** (interactive Draft session, notebook `colab/train_kaggle.ipynb`, T4).
+  Score 4.4 → 13.3 → 21.0 → 26.6 → 31.7 → 33.8 → 36.6 → **38.2 at 19.5M steps** (175.6 min). Average level ~0.2-0.3 / 5 and rising.
+  Should finish ~4:30 AM 24 Nov. Files in Kaggle's Output panel: `clawer4_p1.params`, `clawer4_p1_backup.params`,
+  `clawer4_p1_bumps.mp4`, `clawer4_p1_stairs.mp4`. **Download them before ~9 AM** (Kaggle's 12 h session limit);
+  interactive `/kaggle/working` is NOT kept after the session ends.
+- P1 run #1 (Colab, 22 Nov) was lost at 13.9M (score 33.3) when the tab disconnected.
+- A second P1 copy on Colab (no Drive) disconnected at 4.6M and was lost; Colab's free GPU limit is used up again.
+
+**Real speed:** rough-ground training is ~**0.1M steps/min** on a T4 (both Kaggle and Colab), so a 50M run takes
+**~7.5 h**. (The earlier "0.5M steps/min, 1 h 50 min" figure was wrong. Flat B1 runs ~0.9M/min.)
 
 **What went wrong (lessons):**
 - `files.download` needs the browser tab connected; each download also opens a Chrome "Save as" window that freezes the tab until someone clicks Save.
-- The laptop must not sleep (set "sleep when plugged in" to Never before a run).
+- The laptop must not sleep (sleep when plugged in = Never, done 23 Nov).
 - Never run the training cell twice in one Colab session (it crashes); restart the session first.
-- The "average level" print is wrong (shows 100-350 "/ 5"): Brax adds the level up over a whole episode. Needs dividing by the episode length.
+- Average-level print fixed (`3096d6f`: divided by episode length).
+- Colab free GPU runs out after a few long runs (resets in ~12-24 h). Colab also disconnects long runs.
+- Google Drive mount needs the user to click the Google sign-in pop-up (Claude's Chrome control cannot reach it).
+- Kaggle: "Save & Run All (Commit)" can sit Queued for hours; the interactive session gets a GPU at once.
+  Don't `pip install jax[cuda12]` on Kaggle (clashes with its jax-cuda13 plugin, fixed in `11f163a`).
 
-**Next step (23 Nov):**
-1. Code fixes (Claude): save the backup + final brain + video to **Google Drive** (`MyDrive/clawer4_runs/<run name>/`) instead of
-   Chrome downloads; fix the average-level print. Push to GitHub.
-2. In Colab: Runtime → "Disconnect and delete runtime" (the old stuck session), then run the notebook from the top.
-   Allow Drive access once when asked.
-3. Full P1 run: `train_policy(terrain=True, out="clawer4_p1.params")`, ~1 h 50 min. Laptop plugged in, sleep = Never, tab open.
-4. Check at ~10M steps: score above 20 (run #1 had 30.7 at 11.1M) and average level above 0.
-5. After: copy the brain from Drive into `final-quad-rl\p1-<date>` and `clawer4-rl/`, watch the video on bumps, then stairs.
+**Next step (24 Nov):**
+1. When Kaggle finishes: download the 4 files from Output into `final-quad-rl\p1-241126`, copy the brain into `clawer4-rl/`.
+2. Watch the bumps and stairs videos. Check the final score and average level.
+3. Write the P1 result into the results section.
 
 **Then:** add servo **load** to the sim and train **P2**.
 
@@ -131,8 +137,8 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 |---|---|
 | Sat 21 | Rough ground + levels in training (above) |
 | Sun 22 | Add servo **load** to the sim (with noise) |
-| Mon 23 | Train P1 (rough ground) |
-| Tue 24 | Train P2 (rough ground + load) |
+| Mon 23 | Train P1 (rough ground): running on Kaggle, done 24 Nov ~4:30 AM |
+| Tue 24 | Check P1 videos; add servo **load** to the sim, start P2 (~7.5 h) |
 | Wed 25 | Train P3 (+ history), if time |
 | Thu 26 | Test all policies in sim: results table + graphs |
 | Fri 27 | Read Rudin 2022 (simple summary) |
