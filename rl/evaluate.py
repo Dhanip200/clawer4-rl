@@ -6,12 +6,13 @@
 
 Every robot starts on the flat patch in the middle of a tile, facing a random way, and is told to walk
 straight ahead. Each brain gets exactly the same start positions. One try ends as:
-  success  it got CROSS_R (1.3 m, past the last stair step) from the tile centre without falling
+  success  it got CROSS_R (1.2 m, past the last stair step) from the tile centre without falling
   fell     it tipped over or its body dropped too low before that
   stuck    neither happened before the time ran out
 
 Plan: 1,000 tries per level = 200 robots x 5 kinds of ground. Writes a .csv with one row per
-brain + kind + level, and prints tables. Brax is not needed (the brain file is read directly).
+brain + kind + level, a second one (<out>_robots.csv) with one row per robot, and prints tables.
+Brax is not needed (the brain file is read directly).
 """
 import argparse
 import csv
@@ -30,7 +31,9 @@ from mujoco import mjx
 from clawer4_env import CTRL_DT, MAX_TORQUE, Clawer4Walk
 from terrain import KINDS, MAX_STEP
 
-CROSS_R = 1.3        # m: square distance from the tile centre (stairs end at 0.3 + 5 x 0.2 = 1.3 m)
+# m: square distance from the tile centre. The last stair step is at 1.1 m. Not further out: some neighbouring
+# tiles start higher (a wall at 1.5 m), and a robot's front feet reach it when its middle is at about 1.28 m.
+CROSS_R = 1.2
 CHUNK = 50           # control steps per jitted block (1 s)
 
 
@@ -119,7 +122,7 @@ def run(env, policy, levels, kinds, keys, command, seconds):
     n = len(levels)
     rec = {"time": jp.zeros(n), "forward": jp.zeros(n), "effort": jp.zeros(n),
            "success": jp.zeros(n, bool), "fell": jp.zeros(n, bool), "bad": jp.zeros(n, bool),
-           "x0": states.pipeline_state.qpos[:, :2], "x1": states.pipeline_state.qpos[:, :2],
+           "far": jp.zeros(n), "x0": states.pipeline_state.qpos[:, :2], "x1": states.pipeline_state.qpos[:, :2],
            "h0": jax.vmap(lambda d: heading(env, d))(states.pipeline_state)}
 
     def one(s, r, c):
@@ -131,7 +134,8 @@ def run(env, policy, levels, kinds, keys, command, seconds):
         d = s.pipeline_state
         bad = ~jp.isfinite(d.qpos).all()                 # physics blew up: counts as a fall, reported
         fell = (s.done > 0) | bad
-        crossed = jp.max(jp.abs(d.qpos[:2] - c)) >= CROSS_R
+        dist = jp.max(jp.abs(d.qpos[:2] - c))
+        crossed = dist >= CROSS_R
         upd = lambda new, old: jp.where(active, new, old)  # noqa: E731
         return s, {
             "time": upd(r["time"] + CTRL_DT, r["time"]),
@@ -140,6 +144,7 @@ def run(env, policy, levels, kinds, keys, command, seconds):
             "fell": r["fell"] | (active & fell),
             "success": r["success"] | (active & crossed & ~fell),
             "bad": r["bad"] | (active & bad),
+            "far": upd(jp.maximum(r["far"], dist), r["far"]),
             "x0": r["x0"], "x1": upd(d.qpos[:2], r["x1"]), "h0": r["h0"]}
 
     @jax.jit
@@ -158,7 +163,8 @@ def run(env, policy, levels, kinds, keys, command, seconds):
     side = r["h0"][:, 0] * move[:, 1] - r["h0"][:, 1] * move[:, 0]     # left of the starting direction
     return {"success": r["success"], "fell": r["fell"], "bad": r["bad"], "time": r["time"],
             "speed": r["forward"] / np.maximum(r["time"], CTRL_DT),
-            "drift": np.abs(side), "effort": r["effort"] / steps * 100}
+            "drift": np.abs(side), "effort": r["effort"] / steps * 100, "far": r["far"],
+            "start_heading_deg": np.degrees(np.arctan2(r["h0"][:, 1], r["h0"][:, 0]))}
 
 
 # ---------- tables ----------
@@ -227,7 +233,7 @@ def main():
     ids = jp.array([lv * 1_000_000 + k * 100_000 + i for lv, k, i in grid], jp.uint32)
     keys = jax.vmap(lambda i: jax.random.fold_in(jax.random.PRNGKey(args.seed), i))(ids)
 
-    rows = []
+    rows, robots = [], []
     for text in args.brain:
         name, path, env_args = parse_brain(text)
         policy, n_in = load_brain(path)
@@ -244,6 +250,13 @@ def main():
         for k in args.kinds:
             for lv in args.levels:
                 rows.append(summarise(name, k, lv, r, (kinds == k) & (levels == lv)))
+        robots += [{"brain": name, "kind": KINDS[k], "level": lv, "robot": i,
+                    **{m: (int(r[m][j]) if r[m].dtype == bool else round(float(r[m][j]), 4)) for m in r}}
+                   for j, (lv, k, i) in enumerate(grid)]
+        with open(str(Path(args.out).with_suffix("")) + "_robots.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(robots[0]))
+            w.writeheader()
+            w.writerows(robots)
         with open(args.out, "w", newline="") as f:       # saved after every brain, so a crash loses little
             w = csv.DictWriter(f, fieldnames=list(rows[0]))
             w.writeheader()
