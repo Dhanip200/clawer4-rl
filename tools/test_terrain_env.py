@@ -6,7 +6,7 @@ info["first_pipeline_state"] and info["first_obs"]), so the curriculum can be te
   1. Stand still on the start patch of each of the 5 kinds (level 0) for 2 s: stays up, feet on the ground.
   2. Ground height check: env._ground() matches a ray cast straight down in MuJoCo.
   3. Curriculum: a robot that "walked well" goes up a level and is moved to the new tile;
-     a robot that fell goes down a level.
+     circling on the flat patch or standing as told keeps its level; too slow or falling goes down.
   4. 16 robots, random actions, 4 s: no NaNs, shapes right.
 
 Usage:  python tools/test_terrain_env.py
@@ -76,17 +76,41 @@ print(f"[2] ground height vs ray: mean error {np.mean(errs) * 1000:.2f} mm, max 
 s = reset(jax.random.PRNGKey(5))
 q = s.pipeline_state.qpos
 good = {**s.info, "ep_step": jp.int32(999), "steps": jp.float32(999), "asked_dist": jp.float32(1.0),
-        "origin": q[:2] - jp.array([1.0, 0.0])}            # pretend it walked 1 m of the 1 m asked
+        "progress": jp.float32(1.0), "farthest": jp.float32(1.0)}   # pretend it walked 1 m of the 1 m asked
 s2 = step(s.replace(info=good), jp.zeros(12))
 moved = np.asarray(s2.pipeline_state.qpos[:2])
 lv, kd = int(s2.info["level"]), int(s2.info["kind"])
 tile = np.asarray(env.starts[lv, kd, :2])
 print(f"[3] walked well: level 0 -> {lv}, now at {moved.round(2)} (tile [{lv},{kd}] centre {tile.round(2)}), "
       f"done {bool(s2.done)}")
+assert lv == 1 and np.allclose(moved, tile, atol=0.11), "walked well should go up and move to the new tile"
+assert float(s2.info["progress"]) == 0 and float(s2.info["farthest"]) == 0, "bookkeeping must restart"
+for name, ask, prog, far, want_lv in [("circled on the flat patch", 1.0, 1.0, 0.3, 2), ("told to stand", 0.0, 0.0, 0.0, 2),
+                                      ("half the distance", 1.0, 0.6, 1.0, 2), ("too slow", 1.0, 0.2, 1.0, 1)]:
+    inf = {**good, "level": jp.int32(2), "command": jp.zeros(3), "asked_dist": jp.float32(ask),
+           "progress": jp.float32(prog), "farthest": jp.float32(far)}
+    got = int(step(s.replace(info=inf), jp.zeros(12)).info["level"])
+    print(f"    {name}: level 2 -> {got}")
+    assert got == want_lv, name
+# the progress counter: push the robot along world x and compare with the same sum done in numpy
+raw, c = jax.jit(env.step), jp.array([0.2, 0.05, 0.5])
+st, prog = reset(jax.random.PRNGKey(7)), 0.0
+for i in range(60):
+    st = st.replace(info={**st.info, "command": c})
+    prev = np.asarray(st.pipeline_state.qpos[:2])
+    st = st.replace(pipeline_state=st.pipeline_state.replace(qvel=st.pipeline_state.qvel.at[0].set(0.3)))
+    st = raw(st, jp.zeros(12))
+    R = np.asarray(st.pipeline_state.xmat[env.torso_id])
+    f = R[:2, 0] / np.linalg.norm(R[:2, 0])
+    w = (0.2 * f + 0.05 * np.array([-f[1], f[0]])) / np.hypot(0.2, 0.05)
+    prog += float(np.dot(np.asarray(st.pipeline_state.qpos[:2]) - prev, w))
+print(f"    progress counter {float(st.info['progress']):+.4f} m, worked out by hand {prog:+.4f} m")
+assert abs(float(st.info["progress"]) - prog) < 1e-4
 s3 = s2.replace(info={**s2.info, "level": jp.int32(3)})
 tipped = s3.pipeline_state.replace(qpos=s3.pipeline_state.qpos.at[3:7].set(jp.array([0.0, 1.0, 0.0, 0.0])))
 s4 = step(s3.replace(pipeline_state=tipped), jp.zeros(12))   # upside down -> fell
 print(f"    fell at level 3: done {bool(s4.done)}, level -> {int(s4.info['level'])}")
+assert bool(s4.done) and int(s4.info["level"]) == 2
 
 # 4. 16 robots, random actions
 N = 16

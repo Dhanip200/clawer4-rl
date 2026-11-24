@@ -102,10 +102,11 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 
 ## ▶️ Next session (start here)
 
-**Where we are (24 Nov, ~00:00):**
-- **P1 run #2 is training on Kaggle** (interactive Draft session, notebook `colab/train_kaggle.ipynb`, T4).
-  Score 4.4 → 13.3 → 21.0 → 26.6 → 31.7 → 33.8 → 36.6 → **38.2 at 19.5M steps** (175.6 min). Average level ~0.2-0.3 / 5 and rising.
-  Should finish ~4:30 AM 24 Nov. Files in Kaggle's Output panel: `clawer4_p1.params`, `clawer4_p1_backup.params`,
+**Where we are (24 Nov, 01:45):**
+- **P1 run #2 was started on Kaggle; state NOT confirmed since 21.6M steps** (interactive Draft session, notebook `colab/train_kaggle.ipynb`, T4).
+  Score 4.4 → 13.3 → 21.0 → 26.6 → 31.7 → 33.8 → 36.6 → **38.2 at 19.5M steps** (175.6 min). Average level is flat, NOT rising: ~0.33 at 12.5M, 0.13-0.32 around 20-21.6M (robots are hardly leaving level 0).
+  Output stopped at 21.6M (~3 h 20 min into the session); the editor has been stuck on "Draft Session Starting" since a page reload (~01:15).
+  If it is still training it should finish ~4:45 AM 24 Nov. Files in Kaggle's Output panel: `clawer4_p1.params`, `clawer4_p1_backup.params`,
   `clawer4_p1_bumps.mp4`, `clawer4_p1_stairs.mp4`. **Download them before ~9 AM** (Kaggle's 12 h session limit);
   interactive `/kaggle/working` is NOT kept after the session ends.
 - P1 run #1 (Colab, 22 Nov) was lost at 13.9M (score 33.3) when the tab disconnected.
@@ -122,6 +123,7 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 - Colab free GPU runs out after a few long runs (resets in ~12-24 h). Colab also disconnects long runs.
 - Google Drive mount needs the user to click the Google sign-in pop-up (Claude's Chrome control cannot reach it).
 - Kaggle: "Save & Run All (Commit)" can sit Queued for hours; the interactive session gets a GPU at once.
+  (Commit version 1 actually ended after 1 min 17 s on 23 Nov, it had the old jax[cuda12] install cell.)
   Don't `pip install jax[cuda12]` on Kaggle (clashes with its jax-cuda13 plugin, fixed in `11f163a`).
 
 **Next step (24 Nov):**

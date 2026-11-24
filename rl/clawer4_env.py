@@ -23,7 +23,8 @@ N=10 with load = 570 numbers. At the start of an episode the history is the firs
 
 Rough ground (terrain=True): the floor is the heightfield from rl/terrain.py (5 kinds x 6
 levels of tiles). Each robot starts on the flat patch of one tile. Curriculum: when an episode ends,
-a robot that walked at least 80% of the distance it was told to moves one level harder; one that
+a robot that walked at least 80% of the distance it was told to (measured along the commanded
+direction, so turning is fine) and got off the flat start patch moves one level harder; one that
 fell or walked less than 40% of it moves one level easier. Robots that beat level 5 go to a random level.
 
 Works with Brax PPO when brax is installed (Colab); falls back to a tiny
@@ -71,6 +72,8 @@ MIN_BODY_Z = 0.05        # m: body lower than this above the ground under it = f
 EPISODE_STEPS = 1000     # must match episode_length in train.py (used by the curriculum)
 START_JITTER = 0.1       # m: random shift of the start point inside the flat patch (terrain only)
 LEVEL_UP, LEVEL_DOWN = 0.8, 0.4   # curriculum: fraction of the commanded distance walked
+MIN_ASKED = 0.5          # m: told to walk less than this = too little to judge, level stays the same
+LEFT_PATCH = 0.6         # m from the start: off the flat patch (0.3 m half-width + jitter), on real terrain
 SOLVER_ITERS = 2         # physics solver iterations (XML says 100: far too slow on the GPU)
 SOLVER_LS_ITERS = 6
 MAX_TORQUE = 2.45        # N*m, servo forcerange in the XML (load 1.0 = this much)
@@ -167,6 +170,8 @@ class Clawer4Walk(Env):
             "kind": kind,
             "origin": qpos[0:2],                             # where this episode started
             "asked_dist": jp.zeros(()),                      # how far the commands asked it to go
+            "progress": jp.zeros(()),                        # how far it went in the commanded direction
+            "farthest": jp.zeros(()),                        # furthest it got from the start point
             "ep_step": jp.zeros((), dtype=jp.int32),
         }
         metrics = {f"reward/{k}": jp.zeros(()) for k in REWARD_WEIGHTS}
@@ -206,13 +211,23 @@ class Clawer4Walk(Env):
         rng, k_cmd, k_zero, k_q, k_tile, k_rand, k_n1, k_n2 = jax.random.split(old["rng"], 8)
         ep_step = old["ep_step"] + 1
         ended = fell | (ep_step >= EPISODE_STEPS)            # fell, or ran out of time
-        asked = old["asked_dist"] + jp.linalg.norm(old["command"][:2]) * CTRL_DT
-        walked = jp.linalg.norm(data.qpos[0:2] - old["origin"])
+        cmd_xy = old["command"][:2]
+        cmd_speed = jp.linalg.norm(cmd_xy)
+        asked = old["asked_dist"] + cmd_speed * CTRL_DT
+        # Distance moved this step along the commanded direction (which turns with the robot). A straight
+        # line from the start would be unfair: a robot told to turn walks in a curve.
+        fwd = data.xmat[self.torso_id][:2, 0]
+        fwd = fwd / jp.maximum(jp.linalg.norm(fwd), 1e-6)
+        left = jp.array([-fwd[1], fwd[0]])
+        want = (cmd_xy[0] * fwd + cmd_xy[1] * left) / jp.maximum(cmd_speed, 1e-6)
+        progress = old["progress"] + jp.dot(data.qpos[0:2] - state.pipeline_state.qpos[0:2], want)
+        farthest = jp.maximum(old["farthest"], jp.linalg.norm(data.qpos[0:2] - old["origin"]))
 
         level, kind = old["level"], old["kind"]
         if self.terrain:
-            up = ~fell & (asked > 0.5) & (walked > LEVEL_UP * asked)
-            down = fell | (walked < LEVEL_DOWN * asked)
+            judged = asked > MIN_ASKED
+            up = ~fell & judged & (progress > LEVEL_UP * asked) & (farthest > LEFT_PATCH)
+            down = fell | (judged & (progress < LEVEL_DOWN * asked))
             new_level = jp.clip(level + up.astype(jp.int32) - down.astype(jp.int32), 0, self.n_levels - 1)
             beat_top = up & (level == self.n_levels - 1)     # beat the hardest level: random level
             new_level = jp.where(beat_top, jax.random.randint(k_rand, (), 0, self.n_levels), new_level)
@@ -231,6 +246,8 @@ class Clawer4Walk(Env):
         info["level"], info["kind"] = level, kind
         info["origin"] = jp.where(ended, next_qpos[0:2], old["origin"])
         info["asked_dist"] = jp.where(ended, 0.0, asked)
+        info["progress"] = jp.where(ended, 0.0, progress)
+        info["farthest"] = jp.where(ended, 0.0, farthest)
         info["ep_step"] = jp.where(ended, 0, ep_step)
         # the start state the trainer puts back when this episode ends
         template = old.get("first_pipeline_state", data)
