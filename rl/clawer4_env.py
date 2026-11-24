@@ -17,6 +17,10 @@ Servo load (load=True, policy P2): the robot also SEES 12 more numbers, how hard
 pushing (actuator force / max torque, -1..1, like the real ST3020's ReadLoad / 1000), plus
 random noise, because the real reading is coarse. 57 numbers in total.
 
+History (history=N, policy P3): the robot SEES its last N readings (newest first) instead of only
+the latest one, so it can notice things that take time, like a leg stopped by a step.
+N=10 with load = 570 numbers. At the start of an episode the history is the first reading repeated.
+
 Rough ground (terrain=True): the floor is the heightfield from rl/terrain.py (5 kinds x 6
 levels of tiles). Each robot starts on the flat patch of one tile. Curriculum: when an episode ends,
 a robot that walked at least 80% of the distance it was told to moves one level harder; one that
@@ -93,9 +97,10 @@ REWARD_WEIGHTS = {
 
 
 class Clawer4Walk(Env):
-    def __init__(self, terrain=False, xml_path=None, load=False):
+    def __init__(self, terrain=False, xml_path=None, load=False, history=1):
         self.terrain = terrain
         self.load = load
+        self.history = history
         xml_path = xml_path or (TERRAIN_XML if terrain else XML)
         self.mj_model = mujoco.MjModel.from_xml_path(str(xml_path))
         # Speed-ups for GPU training (same idea as MuJoCo Playground's Go1):
@@ -132,7 +137,7 @@ class Clawer4Walk(Env):
     # Brax wants these three
     @property
     def observation_size(self):
-        return 57 if self.load else 45
+        return (57 if self.load else 45) * self.history
 
     @property
     def action_size(self):
@@ -166,7 +171,8 @@ class Clawer4Walk(Env):
         }
         metrics = {f"reward/{k}": jp.zeros(()) for k in REWARD_WEIGHTS}
         metrics["curriculum/level"] = level.astype(jp.float32)
-        obs = self._observe(data, info, k_noise)
+        info["hist"] = self._fresh_history(self._observe(data, info, k_noise))
+        obs = info["hist"].ravel()
         return State(data, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
     def step(self, state, action):
@@ -230,12 +236,16 @@ class Clawer4Walk(Env):
         template = old.get("first_pipeline_state", data)
         start = template.replace(qpos=next_qpos, qvel=jp.zeros_like(data.qvel), ctrl=next_qpos[7:])
         info["first_pipeline_state"] = start
-        info["first_obs"] = self._observe(start, info, k_n1)
+        start_hist = self._fresh_history(self._observe(start, info, k_n1))
+        info["first_obs"] = start_hist.ravel()
         # keep any metrics the Brax wrappers added (e.g. "reward"), just update ours
         metrics = dict(state.metrics)
         metrics.update({f"reward/{k}": v for k, v in terms.items()})
         metrics["curriculum/level"] = level.astype(jp.float32)
-        obs = self._observe(data, info, k_n2)
+        # newest reading first, drop the oldest; a robot that is restarting gets the start history
+        hist = jp.concatenate([self._observe(data, info, k_n2)[None], old["hist"][:-1]])
+        obs = hist.ravel()
+        info["hist"] = jp.where(ended, start_hist, hist)
         return state.replace(pipeline_state=data, obs=obs, reward=reward,
                              done=fell.astype(jp.float32), metrics=metrics, info=info)
 
@@ -279,6 +289,9 @@ class Clawer4Walk(Env):
         ang_vel = data.qvel[3:6]                             # free joint spin is already body-frame
         gravity = rot.T @ jp.array([0.0, 0.0, -1.0])         # which way is down, seen from the body
         return lin_vel, ang_vel, gravity
+
+    def _fresh_history(self, one):
+        return jp.tile(one[None], (self.history, 1))         # [history, numbers per reading]
 
     def _observe(self, data, info, key):
         _, ang_vel, gravity = self._body_frame(data)

@@ -139,7 +139,7 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 | Sun 22 | Add servo **load** to the sim (with noise) |
 | Mon 23 | Train P1 (rough ground): running on Kaggle, done 24 Nov ~4:30 AM |
 | Tue 24 | Check P1 videos; servo load in the sim DONE 24 Nov (`ae16d5c`, `--load`); start P2 (~7.5 h) |
-| Wed 25 | Train P3 (+ history), if time |
+| Wed 25 | Train P3 (+ history), if time. Code DONE 24 Nov (`--history 10`) |
 | Thu 26 | Test all policies in sim: results table + graphs |
 | Fri 27 | Read Rudin 2022 (simple summary) |
 | Sat 28 | Real-robot prep: ESP32 brain program, obstacle course plan |
