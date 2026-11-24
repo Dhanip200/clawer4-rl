@@ -6,6 +6,9 @@ In a Colab cell:
     make_policy, params = train_policy()                   # ~50M steps, shows a live score graph
     make_video(make_policy, params, command=(0.2, 0, 0))   # watch it walk forward at 0.2 m/s
 
+Rough ground + servo load (policy P2): add load=True to both calls, e.g.
+    train_policy(terrain=True, load=True, out="clawer4_p2.params")
+
 Rough ground (policy P1):
     make_policy, params = train_policy(terrain=True, out="clawer4_p1.params")
     make_video(make_policy, params, terrain=True, level=3, kind=2, out="p1_stairs.mp4")
@@ -72,8 +75,8 @@ DRIVE_ROOT = "/content/drive/MyDrive/clawer4_runs"
 _run = ["videos"]                          # Drive folder name, set by train_policy
 
 
-def train_policy(out="clawer4_policy.params", seed=0, terrain=False, **overrides):
-    env = Clawer4Walk(terrain=terrain)
+def train_policy(out="clawer4_policy.params", seed=0, terrain=False, load=False, **overrides):
+    env = Clawer4Walk(terrain=terrain, load=load)
     settings = {**PPO_SETTINGS, **overrides}
     _run[0] = os.path.basename(out).replace(".params", "")
     if _on_kaggle():
@@ -188,12 +191,12 @@ def _plot(steps, scores, total):
 
 
 def make_video(make_policy, params, command=(0.2, 0.0, 0.0), seconds=10, out="walk.mp4",
-               terrain=False, level=0, kind=0):
+               terrain=False, level=0, kind=0, load=False):
     """Run the trained brain with a fixed command, save a video and print how it did.
     terrain=True: start on tile [level, kind] (kinds: 0 bumps, 1 slope, 2 stairs up, 3 stairs down, 4 blocks)."""
     import mediapy
 
-    env = Clawer4Walk(terrain=terrain)
+    env = Clawer4Walk(terrain=terrain, load=load)
     policy = jax.jit(make_policy(params, deterministic=True))
     step = jax.jit(env.step)
     state = jax.jit(env.reset)(jax.random.PRNGKey(0))

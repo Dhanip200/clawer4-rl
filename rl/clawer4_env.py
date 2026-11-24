@@ -13,6 +13,10 @@ Command = [forward m/s, sideways m/s, turn rad/s], picked at random each episode
 Body linear speed is NOT in what the robot sees, because the real robot can't
 measure it. Down-direction and spin come from an IMU, so the real robot needs one.
 
+Servo load (load=True, policy P2): the robot also SEES 12 more numbers, how hard each servo is
+pushing (actuator force / max torque, -1..1, like the real ST3020's ReadLoad / 1000), plus
+random noise, because the real reading is coarse. 57 numbers in total.
+
 Rough ground (terrain=True): the floor is the heightfield from rl/terrain.py (5 kinds x 6
 levels of tiles). Each robot starts on the flat patch of one tile. Curriculum: when an episode ends,
 a robot that walked at least 80% of the distance it was told to moves one level harder; one that
@@ -65,6 +69,8 @@ START_JITTER = 0.1       # m: random shift of the start point inside the flat pa
 LEVEL_UP, LEVEL_DOWN = 0.8, 0.4   # curriculum: fraction of the commanded distance walked
 SOLVER_ITERS = 2         # physics solver iterations (XML says 100: far too slow on the GPU)
 SOLVER_LS_ITERS = 6
+MAX_TORQUE = 2.45        # N*m, servo forcerange in the XML (load 1.0 = this much)
+LOAD_NOISE = 0.05        # std of the noise added to each load reading (guess: measure on the real robot)
 
 # Command ranges, picked at random each episode (the real robot is slow: ~0.17 m/s trot)
 CMD_LO = jp.array([-0.1, -0.1, -0.6])
@@ -87,8 +93,9 @@ REWARD_WEIGHTS = {
 
 
 class Clawer4Walk(Env):
-    def __init__(self, terrain=False, xml_path=None):
+    def __init__(self, terrain=False, xml_path=None, load=False):
         self.terrain = terrain
+        self.load = load
         xml_path = xml_path or (TERRAIN_XML if terrain else XML)
         self.mj_model = mujoco.MjModel.from_xml_path(str(xml_path))
         # Speed-ups for GPU training (same idea as MuJoCo Playground's Go1):
@@ -125,7 +132,7 @@ class Clawer4Walk(Env):
     # Brax wants these three
     @property
     def observation_size(self):
-        return 45
+        return 57 if self.load else 45
 
     @property
     def action_size(self):
@@ -136,7 +143,7 @@ class Clawer4Walk(Env):
         return "mjx"
 
     def reset(self, rng):
-        rng, k_q, k_cmd, k_zero, k_tile = jax.random.split(rng, 5)
+        rng, k_q, k_cmd, k_zero, k_tile, k_noise = jax.random.split(rng, 6)
         level = jp.zeros((), dtype=jp.int32)                 # everyone starts on the easiest level
         kind = jax.random.randint(k_tile, (), 0, self.n_kinds)
         qpos = self._start_qpos(k_q, level, kind)
@@ -159,7 +166,7 @@ class Clawer4Walk(Env):
         }
         metrics = {f"reward/{k}": jp.zeros(()) for k in REWARD_WEIGHTS}
         metrics["curriculum/level"] = level.astype(jp.float32)
-        obs = self._observe(data, info)
+        obs = self._observe(data, info, k_noise)
         return State(data, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
     def step(self, state, action):
@@ -190,7 +197,7 @@ class Clawer4Walk(Env):
         # info["first_pipeline_state"] / info["first_obs"]. So everything that should change between
         # episodes is done here: new command, curriculum level, and a new start point.
         old = state.info
-        rng, k_cmd, k_zero, k_q, k_tile, k_rand = jax.random.split(old["rng"], 6)
+        rng, k_cmd, k_zero, k_q, k_tile, k_rand, k_n1, k_n2 = jax.random.split(old["rng"], 8)
         ep_step = old["ep_step"] + 1
         ended = fell | (ep_step >= EPISODE_STEPS)            # fell, or ran out of time
         asked = old["asked_dist"] + jp.linalg.norm(old["command"][:2]) * CTRL_DT
@@ -223,12 +230,12 @@ class Clawer4Walk(Env):
         template = old.get("first_pipeline_state", data)
         start = template.replace(qpos=next_qpos, qvel=jp.zeros_like(data.qvel), ctrl=next_qpos[7:])
         info["first_pipeline_state"] = start
-        info["first_obs"] = self._observe(start, info)
+        info["first_obs"] = self._observe(start, info, k_n1)
         # keep any metrics the Brax wrappers added (e.g. "reward"), just update ours
         metrics = dict(state.metrics)
         metrics.update({f"reward/{k}": v for k, v in terms.items()})
         metrics["curriculum/level"] = level.astype(jp.float32)
-        obs = self._observe(data, info)
+        obs = self._observe(data, info, k_n2)
         return state.replace(pipeline_state=data, obs=obs, reward=reward,
                              done=fell.astype(jp.float32), metrics=metrics, info=info)
 
@@ -273,16 +280,20 @@ class Clawer4Walk(Env):
         gravity = rot.T @ jp.array([0.0, 0.0, -1.0])         # which way is down, seen from the body
         return lin_vel, ang_vel, gravity
 
-    def _observe(self, data, info):
+    def _observe(self, data, info, key):
         _, ang_vel, gravity = self._body_frame(data)
-        return jp.concatenate([
+        parts = [
             gravity,                                         # 3
             ang_vel * 0.25,                                  # 3  (scaled to roughly -1..1)
             data.qpos[7:] - self.default_joints,             # 12
             data.qvel[6:] * 0.05,                            # 12
             info["last_act"],                                # 12
             info["command"],                                 # 3
-        ])
+        ]
+        if self.load:                                        # 12 servo loads, -1..1, noisy
+            load = data.actuator_force / MAX_TORQUE
+            parts.append(load + LOAD_NOISE * jax.random.normal(key, (12,)))
+        return jp.concatenate(parts)
 
     def _reward_terms(self, data, action, info, air_time, first_contact, fell):
         lin_vel, ang_vel, gravity = self._body_frame(data)
