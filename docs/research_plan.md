@@ -102,16 +102,24 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 
 ## ▶️ Next session (start here)
 
-**Where we are (24 Nov, 02:20):**
+**Where we are (24 Nov, 10:35):**
+- **P1 is trained (run #3, Kaggle Commit version 3, fixed level rule).** 52.9M steps in 462 min. Score on level 0: 4.4 (0M), 21.97 (5.6M),
+  31.64 (11.1M), 36.91 (19.5M), then flat 35.4-37.8; final **37.79**. Average training level 0.17 (7.7M), 1.08 (12.6M), 1.80 (19.8M),
+  2.3-2.8 (30-40M), about **2.8-3.0 / 5** at the end (run #2 never passed 0.36 in the lines seen).
+- One 10 s video each on level 2, told to walk 0.2 m/s: bumps +1.88 m forward (0.188 m/s), drifted 0.64 m sideways; stairs up +1.29 m
+  (0.129 m/s), drifted 0.53 m sideways. No fall in either. One try each, so not a measurement.
+- Files in `final-quad-rl\p1-241126` (brain, backup = identical to the brain, 2 videos); copies in the repo (`clawer4_p1.params`, `media/`).
 - **P1 run #2 (Kaggle interactive session) was lost.** Scores 4.4, 13.3, 21.0, 26.6, 31.7, 33.8, 36.6, 38.2 (0 to 19.5M steps);
   last line seen 21.6M, nothing downloaded. Average level stayed ~0.1-0.36 / 5. A Colab copy was lost at 4.6M.
 - **Level rule fixed (`f6e4c5d`).** The old rule compared straight-line distance from the start with the total distance commanded,
   so robots told to turn failed even when they obeyed. New rule: progress along the commanded direction, and the robot must get
   0.6 m from its start. Simulated perfect robot, up / down per episode: old 14.6% / 39.5%, new 83.6% / 0%.
   Real B1 brain, full physics, level 0, 16 robots, same episodes: old 1 up / 6 down, new 8 up / 0 down.
-- Runs #1 and #2 used the old rule, so their levels and scores are not comparable with later runs.
+- Runs #1 and #2 used the old rule, so their levels are not comparable with later runs. The score is
+  measured on fresh robots that start at level 0, so it is roughly comparable, but says nothing about harder ground.
 - Servo load (`--load`, P2) and history (`--history 10`, P3) are coded and tested on the CPU, not trained.
-- Kaggle Commit practice run (version 2) started 24 Nov ~02:00, to check that files really end up in Output.
+- Kaggle Commit works: practice run (version 2) and P1 both kept their files in Output. Kaggle says "Successfully ran" even when
+  training crashed (version 1), so always check the log and the files.
 
 **Real speed:** rough-ground training is ~**0.1M steps/min** on a T4 (both Kaggle and Colab), so a 50M run takes
 **~7.5 h**. (The earlier "0.5M steps/min, 1 h 50 min" figure was wrong. Flat B1 runs ~0.9M/min.)
@@ -131,9 +139,8 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
   the files are lost when the session ends. Use Save & Run All (Commit), and don't leave a sleep cell in the notebook.
 
 **Next step (24 Nov):**
-1. Check the practice Commit really saved `practice.params` and the videos in Output.
-2. Full P1 as a Commit with the fixed level rule (~7.5 h, Kaggle's limit is 12 h). Check that the average level climbs.
-3. Download into `final-quad-rl\p1-241126`, copy the brain into `clawer4-rl/`, watch the bumps and stairs videos.
+1. Results script: many robots per level and ground type, B1 vs P1 (success rate, speed, falls, sideways drift).
+2. Then P2 as a Kaggle Commit (~8 h).
 
 **Then:** train **P2** (load is already in the sim).
 
@@ -143,7 +150,7 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 |---|---|
 | Sat 21 | Rough ground + levels in training (above) |
 | Sun 22 | Add servo **load** to the sim (with noise) |
-| Mon 23 | Train P1 (rough ground): run #2 lost, redo on 24 Nov as a Kaggle Commit |
+| Mon 23 | Train P1 (rough ground): run #2 lost; DONE 24 Nov (run #3, score 37.79, level ~2.9) |
 | Tue 24 | Check P1 videos; servo load in the sim DONE 24 Nov (`ae16d5c`, `--load`); P2 (~7.5 h) after P1 is checked |
 | Wed 25 | Train P3 (+ history), if time. Code DONE 24 Nov (`--history 10`) |
 | Thu 26 | Test all policies in sim: results table + graphs |
