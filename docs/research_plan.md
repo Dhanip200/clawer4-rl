@@ -102,15 +102,16 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 
 ## ▶️ Next session (start here)
 
-**Where we are (24 Nov, 01:45):**
-- **P1 run #2 was started on Kaggle; state NOT confirmed since 21.6M steps** (interactive Draft session, notebook `colab/train_kaggle.ipynb`, T4).
-  Score 4.4 → 13.3 → 21.0 → 26.6 → 31.7 → 33.8 → 36.6 → **38.2 at 19.5M steps** (175.6 min). Average level is flat, NOT rising: ~0.33 at 12.5M, 0.13-0.32 around 20-21.6M (robots are hardly leaving level 0).
-  Output stopped at 21.6M (~3 h 20 min into the session); the editor has been stuck on "Draft Session Starting" since a page reload (~01:15).
-  If it is still training it should finish ~4:45 AM 24 Nov. Files in Kaggle's Output panel: `clawer4_p1.params`, `clawer4_p1_backup.params`,
-  `clawer4_p1_bumps.mp4`, `clawer4_p1_stairs.mp4`. **Download them before ~9 AM** (Kaggle's 12 h session limit);
-  interactive `/kaggle/working` is NOT kept after the session ends.
-- P1 run #1 (Colab, 22 Nov) was lost at 13.9M (score 33.3) when the tab disconnected.
-- A second P1 copy on Colab (no Drive) disconnected at 4.6M and was lost; Colab's free GPU limit is used up again.
+**Where we are (24 Nov, 02:20):**
+- **P1 run #2 (Kaggle interactive session) was lost.** Scores 4.4, 13.3, 21.0, 26.6, 31.7, 33.8, 36.6, 38.2 (0 to 19.5M steps);
+  last line seen 21.6M, nothing downloaded. Average level stayed ~0.1-0.36 / 5. A Colab copy was lost at 4.6M.
+- **Level rule fixed (`f6e4c5d`).** The old rule compared straight-line distance from the start with the total distance commanded,
+  so robots told to turn failed even when they obeyed. New rule: progress along the commanded direction, and the robot must get
+  0.6 m from its start. Simulated perfect robot, up / down per episode: old 14.6% / 39.5%, new 83.6% / 0%.
+  Real B1 brain, full physics, level 0, 16 robots, same episodes: old 1 up / 6 down, new 8 up / 0 down.
+- Runs #1 and #2 used the old rule, so their levels and scores are not comparable with later runs.
+- Servo load (`--load`, P2) and history (`--history 10`, P3) are coded and tested on the CPU, not trained.
+- Kaggle Commit practice run (version 2) started 24 Nov ~02:00, to check that files really end up in Output.
 
 **Real speed:** rough-ground training is ~**0.1M steps/min** on a T4 (both Kaggle and Colab), so a 50M run takes
 **~7.5 h**. (The earlier "0.5M steps/min, 1 h 50 min" figure was wrong. Flat B1 runs ~0.9M/min.)
@@ -126,12 +127,15 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
   (Commit version 1 actually ended after 1 min 17 s on 23 Nov, it had the old jax[cuda12] install cell.)
   Don't `pip install jax[cuda12]` on Kaggle (clashes with its jax-cuda13 plugin, fixed in `11f163a`).
 
-**Next step (24 Nov):**
-1. When Kaggle finishes: download the 4 files from Output into `final-quad-rl\p1-241126`, copy the brain into `clawer4-rl/`.
-2. Watch the bumps and stairs videos. Check the final score and average level.
-3. Write the P1 result into the results section.
+- **Interactive Kaggle sessions are not safe for long runs:** Kaggle asks "Are you still there?" after 40 min without edits, and
+  the files are lost when the session ends. Use Save & Run All (Commit), and don't leave a sleep cell in the notebook.
 
-**Then:** add servo **load** to the sim and train **P2**.
+**Next step (24 Nov):**
+1. Check the practice Commit really saved `practice.params` and the videos in Output.
+2. Full P1 as a Commit with the fixed level rule (~7.5 h, Kaggle's limit is 12 h). Check that the average level climbs.
+3. Download into `final-quad-rl\p1-241126`, copy the brain into `clawer4-rl/`, watch the bumps and stairs videos.
+
+**Then:** train **P2** (load is already in the sim).
 
 **Plan until the robot arrives:**
 
@@ -139,8 +143,8 @@ and log `ReadLoad`. Fit that line and add the measured noise to the sim.
 |---|---|
 | Sat 21 | Rough ground + levels in training (above) |
 | Sun 22 | Add servo **load** to the sim (with noise) |
-| Mon 23 | Train P1 (rough ground): running on Kaggle, done 24 Nov ~4:30 AM |
-| Tue 24 | Check P1 videos; servo load in the sim DONE 24 Nov (`ae16d5c`, `--load`); start P2 (~7.5 h) |
+| Mon 23 | Train P1 (rough ground): run #2 lost, redo on 24 Nov as a Kaggle Commit |
+| Tue 24 | Check P1 videos; servo load in the sim DONE 24 Nov (`ae16d5c`, `--load`); P2 (~7.5 h) after P1 is checked |
 | Wed 25 | Train P3 (+ history), if time. Code DONE 24 Nov (`--history 10`) |
 | Thu 26 | Test all policies in sim: results table + graphs |
 | Fri 27 | Read Rudin 2022 (simple summary) |
